@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+
+"""
+CephFS kernel mount tool.
+
+(c) 2019 Jonas Jelten <jj@sft.mx>
+Released under GPLv3 or later.
+
+Can mount CephFS without the `mount.cephfs` helper tool,
+instead, this is a pure-python implementation without any special dependencies.
+
+If you want an even simpler variant without the kernel keyring, use:
+    mount -t ceph -o name=client.username,secret=BASE64SECRET mon1,mon2,mon3:/path destination
+"""
+
+import argparse
+import base64
+import ctypes
+import ctypes.util
+import errno as errnos
+import os
+
+
+LIBC = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+LIBC.mount.argtypes = (ctypes.c_char_p, ctypes.c_char_p,
+                       ctypes.c_char_p, ctypes.c_ulong, ctypes.c_char_p)
+
+
+def mount(source, target, filesystem, options=''):
+    """
+    Call the libc mount function.
+    """
+    mountflags = 0
+    result = LIBC.mount(source, target, filesystem, mountflags, options)
+    if result < 0:
+        errno = ctypes.get_errno()
+        raise OSError(
+            errno,
+            "Failed to mount %s with %s to %s with options '%s': %s; "
+            "look at dmesg for details" % (source, filesystem, target,
+                                           options, os.strerror(errno)))
+
+
+def ceph_available():
+    """
+    Check if the kernel supports mounting ceph.
+    """
+    with open("/proc/filesystems") as hdl:
+        for line in hdl:
+            if line.strip() == 'nodev   ceph':
+                return True
+    return False
+
+
+def upload_key(keyfile, keyid, username, nokeyring):
+    """
+    Read the given keyfile (which contains a base64-encoded shared secret)
+    and upload it to the kernel keyring, if possible.
+
+    If keyfile is none, a keyid for an already loaded secret keyid must be given.
+
+    return the mount option that tells ceph about the secret id.
+    """
+    if keyfile:
+        with open(keyfile) as hdl:
+            key_b64 = hdl.read().strip()
+            key = base64.b64decode(key_b64)
+    else:
+        key = None
+
+    if not nokeyring:
+        # add key to kernel keyring for the process keyring
+
+        keyutils_libname = ctypes.util.find_library("keyutils")
+        if not keyutils_libname:
+            print("Could not find 'keyutils' library. You can try to use --nokeyring.")
+            exit(1)
+
+        # from keyutils.h
+        key_serial_t = ctypes.c_int32
+        key_spec_process_keyring = -2
+
+        keyutils = ctypes.CDLL(keyutils_libname, use_errno=True)
+        keyutils.add_key.restype = key_serial_t
+        keyutils.add_key.argtypes = (
+            ctypes.c_char_p,  # type
+            ctypes.c_char_p,  # description
+            ctypes.c_void_p,  # payload
+            ctypes.c_size_t,  # payload_len
+            key_serial_t,     # keyring
+        )
+        keyutils.request_key.restype = key_serial_t
+        keyutils.request_key.argtypes = (
+            ctypes.c_char_p,  # type
+            ctypes.c_char_p,  # description
+            ctypes.c_char_p,  # callout_info
+            key_serial_t,     # keyring
+        )
+
+        if keyid:
+            key_name = keyid
+        else:
+            key_name = "client.%s" % username
+
+        if key:
+            # push the key to the kernel
+            serial = keyutils.add_key(b"ceph", key_name.encode(),
+                                      key, len(key),
+                                      key_spec_process_keyring)
+
+            if serial == -1:
+                errno = ctypes.get_errno()
+                raise OSError(errno, "Failed to add key: %s" % (os.strerror(errno)))
+        else:
+            # verify the requested key exists
+            # copy it to the process keyring
+            serial = keyutils.request_key(b"ceph", key_name.encode(), None, 0)
+            key_found = (serial != -1)
+            if not key_found:
+                print("Kernel probably does not know a ceph key with id='%s'" % key_name)
+
+        return "key=%s" % key_name
+
+    elif not keyfile:
+        return None
+    else:
+        # legacy-way to pass the secret to the kernel
+        return "secret=%s" % key_b64
+
+
+def main():
+    """
+    Load the secret into the kernel and mount CephFS to the desired location.
+    """
+    cli = argparse.ArgumentParser()
+    cli.add_argument("--nokeyring", action="store_true",
+                     help="don't use the kernel keyring, pass the secret by commandline instead")
+    cli.add_argument("--options", "-o",
+                     help=("further comma-separated mount options like 'ro,relatime', "
+                           "see 'man mount.cephfs'"))
+    cli.add_argument("--keyfile", "-k",
+                     help="file with the base64 encoded secret for authenticating the user")
+    cli.add_argument("--keyid", "-i",
+                     help="kernel keyring key id to use for authentication")
+    cli.add_argument("--username", "-u", default=os.getlogin(),
+                     help="ceph authentication username. default: %(default)s")
+    cli.add_argument("--srcpath", "-s", default="/",
+                     help="ceph source path to mount. default: %(default)s")
+    cli.add_argument("monitors",
+                     help="commaseparated string of ceph monitor servers, e.g. mon1,mon2,mon3")
+    cli.add_argument("mount_destination",
+                     help="path to destination director where to mount the ceph filesystem")
+
+    args = cli.parse_args()
+
+    if not (args.keyid or args.keyfile):
+        cli.error("You need to specify a keyfile containing the base64 secret "
+                  "or a keyid of an already loaded kernel secret")
+
+    if os.geteuid() != 0:
+        print("need root privileges")
+        exit(1)
+
+    if not ceph_available():
+        print("Your kernel does not support mounting ceph filesystems. "
+              "Is the ceph kernel module loaded?")
+        exit(1)
+
+    key_option = upload_key(args.keyfile, args.keyid, args.username, args.nokeyring)
+    if not key_option:
+        print("Need --keyfile when not using an existing key in the kernel")
+        exit(1)
+
+    mnt_options = []
+    mnt_options.append("name=%s" % args.username)
+    mnt_options.append(key_option)
+    if args.options:
+        mnt_options.append(args.options)
+
+    mnt_src = ('%s:%s' % (args.monitors, args.srcpath)).encode()
+    mnt_dst = args.mount_destination.encode()
+    mnt_type = b'ceph'
+    mnt_option_str = ",".join(mnt_options).encode()
+
+    ret = mount(mnt_src, mnt_dst, mnt_type, mnt_option_str)
+    if ret != 0:
+        errno = ctypes.get_errno()
+        if errno == errnos.ENODEV:
+            raise OSError(errno, ("failed to mount: ceph is not supported by system "
+                                  "(is the kernel module loaded?)"))
+
+        if errno != 0:
+            raise OSError(errno, "failed to mount: %s" % (os.strerror(errno)))
+
+
+if __name__ == "__main__":
+    main()
