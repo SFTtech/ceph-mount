@@ -47,7 +47,7 @@ def ceph_available():
     """
     with open("/proc/filesystems") as hdl:
         for line in hdl:
-            if line.strip() == 'nodev   ceph':
+            if line.strip() == 'nodev\tceph':
                 return True
     return False
 
