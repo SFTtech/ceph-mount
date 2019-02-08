@@ -19,6 +19,8 @@ import ctypes
 import ctypes.util
 import errno as errnos
 import os
+import socket
+import sys
 
 
 LIBC = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
@@ -37,8 +39,11 @@ def mount(source, target, filesystem, options=''):
         raise OSError(
             errno,
             "Failed to mount %s with %s to %s with options '%s': %s; "
-            "look at dmesg for details" % (source, filesystem, target,
-                                           options, os.strerror(errno)))
+            "look at dmesg for details" % (source.decode(),
+                                           filesystem.decode(),
+                                           target.decode(),
+                                           options.decode(),
+                                           os.strerror(errno)))
 
 
 def ceph_available():
@@ -50,6 +55,40 @@ def ceph_available():
             if line.strip() == 'nodev\tceph':
                 return True
     return False
+
+
+def resolve_mons(mon_str):
+    """
+    convert a string of monhost,monhost:port,...
+    to monip,monip:port,...
+    """
+
+    mon_default_port = 6789
+
+    mons = mon_str.split(",")
+    resolved_mons = []
+    for mon in mons:
+        mon_split = mon.split(":", 1)
+        mon_host = mon_split[0]
+        mon_port = int(mon_split[1]) if len(mon_split) == 2 else mon_default_port
+
+        print("testing connection to monitor %s:%d..." % (mon_host, mon_port), end="")
+        sys.stdout.flush()
+        try:
+            conn_test = socket.socket()
+            conn_test.settimeout(5)
+            conn_test.connect((mon_host, mon_port))
+            mon_ip = conn_test.getpeername()[0]
+            conn_test.close()
+            print(" ok.")
+        except (TimeoutError, socket.timeout):
+            print("\nfailed connection test to %s:%d" % (mon_host, mon_port))
+            exit(1)
+
+        mon_str = ":".join([mon_ip] + mon_split[1:])
+        resolved_mons.append(mon_str)
+
+    return ",".join(resolved_mons)
 
 
 def upload_key(keyfile, keyid, username, nokeyring):
@@ -146,8 +185,11 @@ def main():
                      help="ceph authentication username. default: %(default)s")
     cli.add_argument("--srcpath", "-s", default="/",
                      help="ceph source path to mount. default: %(default)s")
+    cli.add_argument("--kernel-resolve", action="store_true",
+                     help="let the kernel resolve the monitor IPs")
     cli.add_argument("monitors",
-                     help="commaseparated string of ceph monitor servers, e.g. mon1,mon2,mon3")
+                     help=("commaseparated string of ceph monitor servers, e.g. mon1,mon2,mon3. "
+                           "optionally, add :port for a monitor"))
     cli.add_argument("mount_destination",
                      help="path to destination director where to mount the ceph filesystem")
 
@@ -166,6 +208,11 @@ def main():
               "Is the ceph kernel module loaded?")
         exit(1)
 
+    if args.kernel_resolve:
+        monitors = args.monitors
+    else:
+        monitors = resolve_mons(args.monitors)
+
     key_option = upload_key(args.keyfile, args.keyid, args.username, args.nokeyring)
     if not key_option:
         print("Need --keyfile when not using an existing key in the kernel")
@@ -177,12 +224,17 @@ def main():
     if args.options:
         mnt_options.append(args.options)
 
-    mnt_src = ('%s:%s' % (args.monitors, args.srcpath)).encode()
-    mnt_dst = args.mount_destination.encode()
-    mnt_type = b'ceph'
-    mnt_option_str = ",".join(mnt_options).encode()
+    mnt_src = '%s:%s' % (monitors, args.srcpath)
+    mnt_dst = args.mount_destination
+    mnt_type = 'ceph'
+    mnt_option_str = ",".join(mnt_options)
 
-    ret = mount(mnt_src, mnt_dst, mnt_type, mnt_option_str)
+    print("mounting ceph from %s to %s..." % (mnt_src, mnt_dst))
+    ret = mount(mnt_src.encode(),
+                mnt_dst.encode(),
+                mnt_type.encode(),
+                mnt_option_str.encode())
+
     if ret != 0:
         errno = ctypes.get_errno()
         if errno == errnos.ENODEV:
