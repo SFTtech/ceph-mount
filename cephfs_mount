@@ -9,8 +9,15 @@ Released under GPLv3 or later.
 Can mount CephFS without the `mount.cephfs` helper tool,
 instead, this is a pure-python implementation without any special dependencies.
 
-If you want an even simpler variant without the kernel keyring, use:
+If you want a simpler variant without the kernel keyring, use:
     mount -t ceph -o name=client.username,secret=BASE64SECRET mon1,mon2,mon3:/path destination
+
+This tool features:
+* uploading key in kernel secret store
+* monitor connection test
+* monitor host name resolution if the kernel doesn't support it
+
+Call with --help to see things this tool can be configured for.
 """
 
 import argparse
@@ -18,9 +25,9 @@ import base64
 import ctypes
 import ctypes.util
 import errno as errnos
+import logging
 import os
 import socket
-import sys
 
 
 LIBC = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
@@ -59,7 +66,7 @@ def ceph_available():
 
 def resolve_mons(mon_str):
     """
-    convert a string of monhost,monhost:port,...
+    Convert a string of monhost,monhost:port,...
     to monip,monip:port,...
     """
 
@@ -67,31 +74,36 @@ def resolve_mons(mon_str):
 
     mons = mon_str.split(",")
     resolved_mons = []
+    reached_mon = False
     for mon in mons:
         mon_split = mon.split(":", 1)
         mon_host = mon_split[0]
         mon_port = int(mon_split[1]) if len(mon_split) == 2 else mon_default_port
 
-        print("testing connection to monitor %s:%d..." % (mon_host, mon_port), end="")
-        sys.stdout.flush()
+        logging.info("testing connection to monitor %s:%d...", mon_host, mon_port)
         try:
             conn_test = socket.socket()
             conn_test.settimeout(5)
             conn_test.connect((mon_host, mon_port))
             mon_ip = conn_test.getpeername()[0]
             conn_test.close()
-            print(" ok.")
+            reached_mon = True
+            logging.info("  ok: %s", mon_ip)
         except (TimeoutError, socket.timeout):
-            print("\nfailed connection test to %s:%d" % (mon_host, mon_port))
-            exit(1)
+            logging.info("  failed.")
+            mon_ip = socket.getaddrinfo(mon_host, mon_port, type=socket.SOCK_STREAM)[0][4][0]
 
         mon_str = ":".join([mon_ip] + mon_split[1:])
         resolved_mons.append(mon_str)
 
+    if not reached_mon:
+        print("could not connect to at least one monitor. giving up.")
+        exit(1)
+
     return ",".join(resolved_mons)
 
 
-def upload_key(keyfile, keyid, username, nokeyring):
+def upload_key(keyfile, keyid=None, username=None, no_kernel_keyring=False):
     """
     Read the given keyfile (which contains a base64-encoded shared secret)
     and upload it to the kernel keyring, if possible.
@@ -100,6 +112,11 @@ def upload_key(keyfile, keyid, username, nokeyring):
 
     return the mount option that tells ceph about the secret id.
     """
+
+    if not no_kernel_keyring and not (keyid or username):
+        raise Exception("need either a keyid or a username "
+                        "for adding keys to kernel keyring")
+
     if keyfile:
         with open(keyfile) as hdl:
             key_b64 = hdl.read().strip()
@@ -107,7 +124,7 @@ def upload_key(keyfile, keyid, username, nokeyring):
     else:
         key = None
 
-    if not nokeyring:
+    if not no_kernel_keyring:
         # add key to kernel keyring for the process keyring
 
         keyutils_libname = ctypes.util.find_library("keyutils")
@@ -136,10 +153,7 @@ def upload_key(keyfile, keyid, username, nokeyring):
             key_serial_t,     # keyring
         )
 
-        if keyid:
-            key_name = keyid
-        else:
-            key_name = "client.%s" % username
+        key_name = keyid if keyid else "client.%s" % username
 
         if key:
             # push the key to the kernel
@@ -153,24 +167,100 @@ def upload_key(keyfile, keyid, username, nokeyring):
         else:
             # verify the requested key exists
             # copy it to the process keyring
-            serial = keyutils.request_key(b"ceph", key_name.encode(), None, 0)
+            serial = keyutils.request_key(b"ceph", key_name.encode(), None,
+                                          key_spec_process_keyring)
             key_found = (serial != -1)
             if not key_found:
-                print("Kernel probably does not know a ceph key with id='%s'" % key_name)
+                logging.warning("Kernel probably does not know a ceph key with id='%s'", key_name)
 
         return "key=%s" % key_name
 
     elif not keyfile:
-        return None
+        raise Exception("kernel keyring not used, but no keyfile provided")
     else:
         # legacy-way to pass the secret to the kernel
         return "secret=%s" % key_b64
 
 
-def main():
+def ceph_mount(monitors, srcpath, mount_destination,
+               keyfile, keyid, username=os.getlogin(), mount_options="",
+               no_kernel_keyring=False, kernel_resolve=True):
     """
     Load the secret into the kernel and mount CephFS to the desired location.
     """
+
+    if not ceph_available():
+        print("Your kernel does not support mounting ceph filesystems. "
+              "Is the ceph kernel module loaded?")
+        exit(1)
+
+    if kernel_resolve:
+        monitors = monitors
+    else:
+        monitors = resolve_mons(monitors)
+
+    key_option = upload_key(keyfile, keyid, username, no_kernel_keyring)
+    if not key_option:
+        print("no secret was provided to the kernel")
+        exit(1)
+
+    mnt_options = []
+    mnt_options.append("name=%s" % username)
+    mnt_options.append(key_option)
+    if mount_options:
+        mnt_options.append(mount_options)
+
+    mnt_src = '%s:%s' % (monitors, srcpath)
+    mnt_dst = mount_destination
+    mnt_type = 'ceph'
+    mnt_option_str = ",".join(mnt_options)
+
+    logging.info("mounting ceph as %s from %s to %s...", username, mnt_src, mnt_dst)
+    ret = mount(mnt_src.encode(),
+                mnt_dst.encode(),
+                mnt_type.encode(),
+                mnt_option_str.encode())
+
+    if ret != 0:
+        errno = ctypes.get_errno()
+        if errno == errnos.ENODEV:
+            raise OSError(errno, ("failed to mount: ceph is not supported by system "
+                                  "(is the kernel module loaded?)"))
+
+        if errno != 0:
+            raise OSError(errno, "failed to mount: %s" % (os.strerror(errno)))
+
+
+def clamp(number, smallest, largest):
+    """
+    return number but limit it to the inclusive given value range
+    """
+    return max(smallest, min(number, largest))
+
+
+def log_setup(setting, default=1):
+    """
+    Perform setup for the logger.
+    Run before any logging.log thingy is called.
+    if setting is 0: the default is used, which is WARNING.
+    else: setting + default is used.
+    """
+
+    levels = (logging.ERROR, logging.WARNING, logging.INFO,
+              logging.DEBUG, logging.NOTSET)
+
+    factor = clamp(default + setting, 0, len(levels) - 1)
+    level = levels[factor]
+
+    logging.basicConfig(level=level, format="%(message)s")
+    logging.captureWarnings(True)
+
+
+def main():
+    """
+    Parse arguments for configuring the CephFS mount.
+    """
+
     cli = argparse.ArgumentParser()
     cli.add_argument("--nokeyring", action="store_true",
                      help="don't use the kernel keyring, pass the secret by commandline instead")
@@ -187,6 +277,10 @@ def main():
                      help="ceph source path to mount. default: %(default)s")
     cli.add_argument("--kernel-resolve", action="store_true",
                      help="let the kernel resolve the monitor IPs")
+    cli.add_argument("-v", "--verbose", action="count", default=0,
+                     help="increase program verbosity")
+    cli.add_argument("-q", "--quiet", action="count", default=0,
+                     help="decrease program verbosity")
     cli.add_argument("monitors",
                      help=("commaseparated string of ceph monitor servers, e.g. mon1,mon2,mon3. "
                            "optionally, add :port for a monitor"))
@@ -195,54 +289,22 @@ def main():
 
     args = cli.parse_args()
 
+    log_setup(args.verbose - args.quiet)
+
     if not (args.keyid or args.keyfile):
         cli.error("You need to specify a keyfile containing the base64 secret "
                   "or a keyid of an already loaded kernel secret")
+
+    if args.nokeyring and not args.keyfile:
+        cli.error("When not using the kernel keyring, use --keyfile to read a key from")
 
     if os.geteuid() != 0:
         print("need root privileges")
         exit(1)
 
-    if not ceph_available():
-        print("Your kernel does not support mounting ceph filesystems. "
-              "Is the ceph kernel module loaded?")
-        exit(1)
-
-    if args.kernel_resolve:
-        monitors = args.monitors
-    else:
-        monitors = resolve_mons(args.monitors)
-
-    key_option = upload_key(args.keyfile, args.keyid, args.username, args.nokeyring)
-    if not key_option:
-        print("Need --keyfile when not using an existing key in the kernel")
-        exit(1)
-
-    mnt_options = []
-    mnt_options.append("name=%s" % args.username)
-    mnt_options.append(key_option)
-    if args.options:
-        mnt_options.append(args.options)
-
-    mnt_src = '%s:%s' % (monitors, args.srcpath)
-    mnt_dst = args.mount_destination
-    mnt_type = 'ceph'
-    mnt_option_str = ",".join(mnt_options)
-
-    print("mounting ceph from %s to %s..." % (mnt_src, mnt_dst))
-    ret = mount(mnt_src.encode(),
-                mnt_dst.encode(),
-                mnt_type.encode(),
-                mnt_option_str.encode())
-
-    if ret != 0:
-        errno = ctypes.get_errno()
-        if errno == errnos.ENODEV:
-            raise OSError(errno, ("failed to mount: ceph is not supported by system "
-                                  "(is the kernel module loaded?)"))
-
-        if errno != 0:
-            raise OSError(errno, "failed to mount: %s" % (os.strerror(errno)))
+    ceph_mount(args.monitors, args.srcpath, args.mount_destination,
+               args.keyfile, args.keyid, args.username,
+               args.options, args.nokeyring, args.kernel_resolve)
 
 
 if __name__ == "__main__":
