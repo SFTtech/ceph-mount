@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+
+"""
+mount.ceph helper script
+can be invoked e.g. by systemd .mount units
+"""
+
+import argparse
+import sys
+
+from importlib.util import spec_from_loader, module_from_spec
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+
+
+def main():
+    """
+    pick interesting arguments from the mount options
+    and invoke the cephfs_mount tool.
+    """
+    # load the cephfs_mount module that actually uploads the key
+    # and mounts the filesystem
+    real_tool = "cephfs_mount"
+    spec = spec_from_loader(real_tool,
+                            SourceFileLoader(real_tool,
+                                             str(Path(__file__).resolve().parent / real_tool)))
+    cephfs_mount = module_from_spec(spec)
+    spec.loader.exec_module(cephfs_mount)
+
+    cli = argparse.ArgumentParser()
+    cli.add_argument("-v", "--verbose", action="count", default=0,
+                     help="increase program verbosity")
+    cli.add_argument("-q", "--quiet", action="count", default=0,
+                     help="decrease program verbosity")
+    cli.add_argument("-o", "--options", help="mounting options", required=True)
+    cli.add_argument("source", help="mount source, format: mon,mon:path")
+    cli.add_argument("destination", help="mount destination")
+    args = cli.parse_args()
+
+    print(sys.argv)
+
+    cephfs_mount.log_setup(args.verbose - args.quiet)
+
+    sources = args.source.split(":", maxsplit=1)
+    if len(sources) != 2:
+        cli.error("mount source invalid: missing ':' in %s" % (sources,))
+    monitors, source_path = sources
+
+    options = args.options.split(",")
+    cleaned_options_list = []
+
+    keyfile = None
+    username = None
+
+    for option in options:
+        if "=" in option and option[-1] != "=":
+            option_left = option.split("=")[0]
+            if option_left == "secret":
+                cli.error("secret no longer valid, use secretfile")
+            elif option_left == "noauto":
+                continue
+            elif option_left == "secretfile":
+                keyfile = option.split("=")[1]
+                continue
+            elif option_left == "name":
+                username = option.split("=")[1]
+                continue
+
+        cleaned_options_list.append(option)
+
+    cleaned_options = ",".join(cleaned_options_list)
+
+    if not keyfile:
+        cli.error("no secretfile= given for keyfile in -o option")
+
+    if not username:
+        cli.error("no name= given for username in -o option")
+
+    cephfs_mount.ceph_mount(monitors, source_path, args.destination,
+                            keyfile, None, username,
+                            cleaned_options, False, False)
+
+
+if __name__ == "__main__":
+    main()
