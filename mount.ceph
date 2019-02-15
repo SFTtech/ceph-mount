@@ -2,7 +2,11 @@
 
 """
 mount.ceph helper script
-can be invoked e.g. by systemd .mount units
+when placed or symlinked in /sbin/mount.ceph,
+it can be invoked e.g. by systemd .mount units.
+
+(c) 2019 Jonas Jelten <jj@sft.mx>
+Released under GPLv3 or later.
 """
 
 import argparse
@@ -37,8 +41,6 @@ def main():
     cli.add_argument("source", help="mount source, format: mon,mon:path")
     cli.add_argument("destination", help="mount destination")
     args = cli.parse_args()
-
-    print(sys.argv)
 
     cephfs_mount.log_setup(args.verbose - args.quiet)
 
