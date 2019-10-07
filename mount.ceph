@@ -5,11 +5,14 @@ mount.ceph helper script
 when placed or symlinked in /sbin/mount.ceph,
 it can be invoked e.g. by systemd .mount units.
 
+should behave like ceph's mount.ceph but this is a pure-python implementation.
+
 (c) 2019 Jonas Jelten <jj@sft.mx>
 Released under GPLv3 or later.
 """
 
 import argparse
+import os
 import sys
 
 from importlib.util import spec_from_loader, module_from_spec
@@ -26,23 +29,43 @@ def main():
     # load the cephfs_mount module that actually uploads the key
     # and mounts the filesystem
     real_tool = "cephfs_mount"
-    spec = spec_from_loader(real_tool,
-                            SourceFileLoader(real_tool,
-                                             str(Path(__file__).resolve().parent / real_tool)))
-    cephfs_mount = module_from_spec(spec)
-    spec.loader.exec_module(cephfs_mount)
+    real_tool_path = Path(__file__).resolve().parent / real_tool
 
-    cli = argparse.ArgumentParser()
+    if real_tool_path.is_file():
+        # first, try to load the cephfs_mount from the resolved current directory
+        # (i.e. follow all symlinks to the development repo)
+        spec = spec_from_loader(real_tool,
+                                SourceFileLoader(real_tool, str(real_tool_path)))
+        cephfs_mount = module_from_spec(spec)
+        spec.loader.exec_module(cephfs_mount)
+    else:
+        # otherwise, import regularly
+        import cephfs_mount
+
+    cli = argparse.ArgumentParser(
+        description=("Mount CephFS, a distributed cluster filesystem."),
+    )
     cli.add_argument("-v", "--verbose", action="count", default=0,
                      help="increase program verbosity")
     cli.add_argument("-q", "--quiet", action="count", default=0,
                      help="decrease program verbosity")
-    cli.add_argument("-o", "--options", help="mounting options", required=True)
-    cli.add_argument("source", help="mount source, format: mon,mon:path")
+    cli.add_argument("--keyfile", default="/etc/ceph/ceph.client.admin.keyring",
+                     help=("default secret keyfile if -o secretfile=$file is missing."
+                           " default is %(default)s"))
+    cli.add_argument("--user", default="admin",
+                     help=("default username for authentication if -o name=$username"
+                           " is missing. default is %(default)s."))
+    cli.add_argument("-o", "--options", default="rw",
+                     help=("ceph mount options, e.g.: rw,name=username,secretfile=..."
+                           " default value is -o %(default)s."))
+    cli.add_argument("source", help="mount source, format: mon1,mon2,mon3:path")
     cli.add_argument("destination", help="mount destination")
     args = cli.parse_args()
 
     cephfs_mount.log_setup(args.verbose - args.quiet)
+
+    if os.geteuid() != 0:
+        exit("need root privileges")
 
     sources = args.source.split(":", maxsplit=1)
     if len(sources) != 2:
@@ -62,7 +85,7 @@ def main():
                 cli.error("secret no longer valid, use secretfile")
             elif option_left == "noauto":
                 continue
-            elif option_left == "secretfile":
+            elif option_left in ("secretfile", "keyfile"):
                 keyfile = option.split("=")[1]
                 continue
             elif option_left == "name":
@@ -74,14 +97,21 @@ def main():
     cleaned_options = ",".join(cleaned_options_list)
 
     if not keyfile:
-        cli.error("no secretfile= given for keyfile in -o option")
+        keyfile = args.keyfile
 
     if not username:
-        cli.error("no name= given for username in -o option")
+        username = args.user
 
-    cephfs_mount.ceph_mount(monitors, source_path, args.destination,
-                            keyfile, None, username,
-                            cleaned_options, False, False)
+    # call to the actual mount tool
+    cephfs_mount.ceph_mount(monitors,
+                            source_path,
+                            args.destination,
+                            username,
+                            keyfile,
+                            keyid=None,
+                            mount_options=cleaned_options,
+                            no_kernel_keyring=False,
+                            kernel_resolve=False)
 
 
 if __name__ == "__main__":

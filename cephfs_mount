@@ -22,11 +22,13 @@ Call with --help to see things this tool can be configured for.
 
 import argparse
 import base64
+import configparser
 import ctypes
 import ctypes.util
 import errno as errnos
 import logging
 import os
+import pathlib
 import socket
 
 
@@ -102,7 +104,7 @@ def resolve_mons(mon_str):
     return ",".join(resolved_mons)
 
 
-def upload_key(keyfile, keyid=None, username=None, no_kernel_keyring=False):
+def upload_key(key, keyid=None, username=None, no_kernel_keyring=False):
     """
     Read the given keyfile (which contains a base64-encoded shared secret)
     and upload it to the kernel keyring, if possible.
@@ -115,13 +117,6 @@ def upload_key(keyfile, keyid=None, username=None, no_kernel_keyring=False):
     if not no_kernel_keyring and not (keyid or username):
         raise Exception("need either a keyid or a username "
                         "for adding keys to kernel keyring")
-
-    if keyfile:
-        with open(keyfile) as hdl:
-            key_b64 = hdl.read().strip()
-            key = base64.b64decode(key_b64)
-    else:
-        key = None
 
     if not no_kernel_keyring:
         # add key to kernel keyring for the process keyring
@@ -227,7 +222,7 @@ def extract_flags(mount_options):
 
 
 def ceph_mount(monitors, srcpath, mount_destination,
-               keyfile, keyid, username, mount_options="",
+               username, keyfile, keyid=None, mount_options="",
                no_kernel_keyring=False, kernel_resolve=True):
     """
     Load the secret into the kernel and mount CephFS to the desired location.
@@ -238,12 +233,37 @@ def ceph_mount(monitors, srcpath, mount_destination,
               "Is the ceph kernel module loaded?")
         exit(1)
 
+    if not pathlib.Path(mount_destination).is_dir():
+        print("mount: %s: mount point does not exist" % mount_destination)
+        exit(32)
+
     if kernel_resolve:
         monitors = monitors
     else:
         monitors = resolve_mons(monitors)
 
-    key_option = upload_key(keyfile, keyid, username, no_kernel_keyring)
+    if keyfile:
+        with open(keyfile) as hdl:
+            keyfiledata = hdl.read().strip()
+
+            # extract the base64-key from a client keyring file
+            if "[client" in keyfiledata:
+                cfg = configparser.ConfigParser()
+                cfg.read_string(keyfiledata)
+                if len(cfg.sections()) > 1:
+                    print("%s has multiple [sections], "
+                          "don't know which one is the right one" % keyfile)
+                    exit(1)
+
+                key_b64 = cfg[cfg.sections()[0]]["key"]
+            else:
+                # the file only contains a key
+                key_b64 = keyfiledata
+
+            key = base64.b64decode(key_b64)
+
+
+    key_option = upload_key(key, keyid, username, no_kernel_keyring)
     if not key_option:
         print("no secret was provided to the kernel")
         exit(1)
@@ -314,8 +334,8 @@ def main():
     cli.add_argument("--options", "-o",
                      help=("further comma-separated mount options like 'ro,relatime', "
                            "see 'man mount.cephfs'"))
-    cli.add_argument("--keyfile", "-k",
-                     help="file with the base64 encoded secret for authenticating the user")
+    cli.add_argument("--keyfile", "-k", default="/etc/ceph/ceph.client.admin.keyring",
+                     help="keyring file or the base64 encoded secret for authenticating the user")
     cli.add_argument("--keyid", "-i",
                      help="kernel keyring key id to use for authentication")
     cli.add_argument("--username", "-u", default=os.getlogin(),
@@ -350,7 +370,7 @@ def main():
         exit(1)
 
     ceph_mount(args.monitors, args.srcpath, args.mount_destination,
-               args.keyfile, args.keyid, args.username,
+               args.username, args.keyfile, args.keyid,
                args.options, args.nokeyring, args.kernel_resolve)
 
 
