@@ -49,16 +49,18 @@ def main():
                      help="increase program verbosity")
     cli.add_argument("-q", "--quiet", action="count", default=0,
                      help="decrease program verbosity")
-    cli.add_argument("--keyfile", default="/etc/ceph/ceph.client.admin.keyring",
-                     help=("default secret keyfile if -o secretfile=$file is missing."
-                           " default is %(default)s"))
     cli.add_argument("--user", default="admin",
                      help=("default username for authentication if -o name=$username"
                            " is missing. default is %(default)s."))
+    cli.add_argument("--keyfile", default="/etc/ceph/ceph.client.admin.keyring",
+                     help=("default secret keyfile if -o secretfile=$file is missing."
+                           " default is %(default)s, but determined by username"))
     cli.add_argument("-o", "--options", default="rw",
                      help=("ceph mount options, e.g.: rw,name=username,secretfile=..."
                            " default value is -o %(default)s."))
-    cli.add_argument("source", help="mount source, format: mon1,mon2,mon3:path")
+    cli.add_argument("source",
+                     help=("mount source, format: mon1,mon2,mon3:/path. "
+                           "use :/path to use monitor addresses from /etc/ceph/ceph.conf"))
     cli.add_argument("destination", help="mount destination")
     args = cli.parse_args()
 
