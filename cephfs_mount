@@ -30,6 +30,7 @@ import logging
 import os
 import pathlib
 import socket
+import subprocess
 
 
 LIBC = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
@@ -237,13 +238,17 @@ def ceph_mount(monitors, srcpath, mount_destination,
     mount_options: option string as given to mount -o ...
     no_kernel_keyring: if true, don't load the secret into the kernel,
                        instead pass it to the mount syscall directly
-    krenel_resolve: let the monitor hostnames be resolved by the kernel
+    kernel_resolve: let the monitor hostnames be resolved by the kernel
     """
 
     if not ceph_available():
-        print("Your kernel does not support mounting ceph filesystems. "
-              "Is the ceph kernel module loaded?")
-        exit(1)
+        try:
+            subprocess.check_call(["modprobe", "ceph"])
+
+        except subprocess.CalledProcessError:
+            print("Your kernel does not support mounting ceph filesystems. "
+                  "Is the ceph kernel module available?")
+            exit(1)
 
     if not pathlib.Path(mount_destination).is_dir():
         print("mount: %s: mount point does not exist" % mount_destination)
