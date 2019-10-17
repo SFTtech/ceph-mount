@@ -29,6 +29,7 @@ import errno as errnos
 import logging
 import os
 import pathlib
+import shutil
 import socket
 import subprocess
 
@@ -247,7 +248,9 @@ def ceph_mount(monitors, srcpath, mount_destination,
 
     if not ceph_available():
         try:
-            subprocess.check_call(["modprobe", "ceph"])
+            # load the ceph kernel module
+            mp_path = shutil.which("modprobe") or "/sbin/modprobe"
+            subprocess.check_call([mp_path, "ceph"])
 
         except subprocess.CalledProcessError:
             print("Your kernel does not support mounting ceph filesystems. "
