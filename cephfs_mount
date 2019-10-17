@@ -206,6 +206,10 @@ def extract_flags(mount_options):
         "nolock"            : ~flags["mandlock"],
     }
 
+    ignored_flags = {
+        "_netdev",   # systemd-feature to mount this fs after network is there
+    }
+
     mountflags = 0
     leftover_options = []
     for option in mount_options:
@@ -216,7 +220,7 @@ def extract_flags(mount_options):
             mountflags |= flag
         elif iflag is not None:
             mountflags &= iflag
-        else:
+        elif option not in ignored_flags:
             leftover_options.append(option)
 
     return mountflags, leftover_options
