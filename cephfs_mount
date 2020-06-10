@@ -3,14 +3,15 @@
 """
 CephFS kernel mount tool.
 
-(c) 2019 Jonas Jelten <jj@sft.mx>
+(c) 2019-2020 Jonas Jelten <jj@sft.lol>
 Released under GPLv3 or later.
 
-Can mount CephFS without the `mount.cephfs` helper tool,
+Can mount CephFS without Ceph's `mount.ceph` helper tool,
 instead, this is a pure-python implementation without any special dependencies.
 
 If you want a simpler variant without the kernel keyring, use:
     mount -t ceph -o name=client.username,secret=BASE64SECRET mon1,mon2,mon3:/path destination
+This even works without any `mount.ceph`-tool.
 
 This tool features:
 * uploading key in kernel secret store
@@ -92,9 +93,16 @@ def resolve_mons(mon_str):
             conn_test.close()
             reached_mon = True
             logging.info("  ok: %s", mon_ip)
-        except (TimeoutError, socket.timeout):
-            logging.info("  failed.")
-            mon_ip = socket.getaddrinfo(mon_host, mon_port, type=socket.SOCK_STREAM)[0][4][0]
+
+        except OSError as exc:
+            logging.info("  failed: %s" % exc)
+            try:
+                # if the connection attempt failed,
+                # we still try to add the mon ip to the list so the kernel has it.
+                mon_ip = socket.getaddrinfo(mon_host, mon_port,
+                                            type=socket.SOCK_STREAM)[0][4][0]
+            except OSError as exc:
+                continue
 
         mon_str = ":".join([mon_ip] + mon_split[1:])
         resolved_mons.append(mon_str)

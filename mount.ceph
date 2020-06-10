@@ -3,11 +3,11 @@
 """
 mount.ceph helper script
 when placed or symlinked in /sbin/mount.ceph,
-it can be invoked e.g. by systemd .mount units.
+it can be invoked e.g. by the `mount` tool or systemd .mount units.
 
 should behave like ceph's mount.ceph but this is a pure-python implementation.
 
-(c) 2019 Jonas Jelten <jj@sft.mx>
+(c) 2019-2020 Jonas Jelten <jj@sft.lol>
 Released under GPLv3 or later.
 """
 
@@ -84,7 +84,8 @@ def main():
         if "=" in option and option[-1] != "=":
             option_left = option.split("=")[0]
             if option_left == "secret":
-                cli.error("secret no longer valid, use secretfile")
+                cli.error("secret=... no longer possible, "
+                          "use secretfile= instead")
             elif option_left == "noauto":
                 continue
             elif option_left in ("secretfile", "keyfile"):
