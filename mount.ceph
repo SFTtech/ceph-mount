@@ -67,7 +67,7 @@ def main():
     cephfs_mount.log_setup(args.verbose - args.quiet)
 
     if os.geteuid() != 0:
-        exit("need root privileges")
+        sys.exit("need root privileges")
 
     sources = args.source.split(":", maxsplit=1)
     if len(sources) != 2:

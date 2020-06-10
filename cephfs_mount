@@ -33,6 +33,7 @@ import pathlib
 import shutil
 import socket
 import subprocess
+import sys
 
 
 LIBC = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
@@ -95,7 +96,7 @@ def resolve_mons(mon_str):
             logging.info("  ok: %s", mon_ip)
 
         except OSError as exc:
-            logging.info("  failed: %s" % exc)
+            logging.info("  failed: %s", exc)
             try:
                 # if the connection attempt failed,
                 # we still try to add the mon ip to the list so the kernel has it.
@@ -136,7 +137,7 @@ def upload_key(key, keyid=None, username=None, no_kernel_keyring=False):
         keyutils_libname = ctypes.util.find_library("keyutils")
         if not keyutils_libname:
             print("Could not find 'keyutils' library. You can try to use --nokeyring.")
-            exit(1)
+            sys.exit(1)
 
         # from keyutils.h
         key_serial_t = ctypes.c_int32
@@ -262,11 +263,11 @@ def ceph_mount(monitors, srcpath, mount_destination,
         except subprocess.CalledProcessError:
             print("Your kernel does not support mounting ceph filesystems. "
                   "Is the ceph kernel module available?")
-            exit(1)
+            sys.exit(1)
 
     if not pathlib.Path(mount_destination).is_dir():
         print("mount: %s: mount point does not exist" % mount_destination)
-        exit(32)
+        sys.exit(32)
 
     if not monitors:
         cephcfg = configparser.ConfigParser()
@@ -275,9 +276,7 @@ def ceph_mount(monitors, srcpath, mount_destination,
 
         monitors = cephcfg['global']['mon_host'].replace(" ", "")
 
-    if kernel_resolve:
-        monitors = monitors
-    else:
+    if not kernel_resolve:
         monitors = resolve_mons(monitors)
 
     if keyfile:
@@ -291,7 +290,7 @@ def ceph_mount(monitors, srcpath, mount_destination,
                 if len(cfg.sections()) > 1:
                     print("%s has multiple [sections], "
                           "don't know which one is the right one" % keyfile)
-                    exit(1)
+                    sys.exit(1)
 
                 key_b64 = cfg[cfg.sections()[0]]["key"]
             else:
@@ -300,11 +299,10 @@ def ceph_mount(monitors, srcpath, mount_destination,
 
             key = base64.b64decode(key_b64)
 
-
     key_option = upload_key(key, keyid, username, no_kernel_keyring)
     if not key_option:
         print("no secret was provided to the kernel")
-        exit(1)
+        sys.exit(1)
 
     mount_flags, leftover_options = extract_flags(mount_options.split(","))
 
@@ -407,7 +405,7 @@ def main():
 
     if os.geteuid() != 0:
         print("need root privileges")
-        exit(1)
+        sys.exit(1)
 
     ceph_mount(args.monitors, args.srcpath, args.mount_destination,
                args.username, keyfile, args.keyid,
