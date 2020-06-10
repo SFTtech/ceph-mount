@@ -109,17 +109,19 @@ def resolve_mons(mon_str):
 
     if not reached_mon:
         print("could not connect to at least one monitor. giving up.")
-        exit(1)
+        sys.exit(1)
 
     return ",".join(resolved_mons)
 
 
 def upload_key(key, keyid=None, username=None, no_kernel_keyring=False):
     """
-    Read the given keyfile (which contains a base64-encoded shared secret)
-    and upload it to the kernel keyring, if possible.
+    Upload the given shared secret to the kernel keyring.
 
-    If keyfile is none, a keyid for an already loaded secret keyid must be given.
+    key: raw bytes, the secret key.
+    keyid: name of the key created in the kernel keyring
+    username: if no keyid is given, keyid=client.$username
+    no_kernel_keyring: don't use the kernel keyring
 
     return the mount option that tells ceph about the secret id.
     """
@@ -179,11 +181,8 @@ def upload_key(key, keyid=None, username=None, no_kernel_keyring=False):
 
         return "key=%s" % key_name
 
-    elif not keyfile:
-        raise Exception("kernel keyring not used, but no keyfile provided")
-    else:
-        # legacy-way to pass the secret to the kernel
-        return "secret=%s" % key_b64
+    # legacy-way to pass the secret to the kernel
+    return "secret=%s" % base64.b64encode(key).decode()
 
 
 def extract_flags(mount_options):
