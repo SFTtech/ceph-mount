@@ -59,18 +59,13 @@ Example `./cephfs_mount` invocation:
 
 If in doubt, look at the source code :)
 
+#### Complete example
 
-### Complete example
+A complete example for manual mounting by setting up the monitors in a `ceph.conf` and the secret key as a file.
 
-Our ceph path: `/nilm`
-
-Our mount path: `/home/ubuntu/nilm`
-
-Our (fake) ceph name: `fs.nilm`
-
-Our (fake) key: `my-secret-key-ABCDEFG`
-
-Our (fake) monitors domain names: `monitor1.domain.com,monitor2.domain.com`
+|ceph path | mount path | ceph name | key | monitor domain names |
+|---|---|---|---|---|
+|`/nilm`|`/home/ubuntu/nilm`|`fs.nilm`|`my-secret-key-ABCDEFG`|`monitor1.domain.com,monitor2.domain.com`|
 
 *Watch to put a space before the echo commands to not add the secrets to your terminal history.*
 
