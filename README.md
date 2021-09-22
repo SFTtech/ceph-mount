@@ -60,6 +60,30 @@ Example `./cephfs_mount` invocation:
 If in doubt, look at the source code :)
 
 
+### Complete example
+
+Our ceph path: `/nilm`
+
+Our mount path: `/home/ubuntu/nilm`
+
+Our (fake) ceph name: `fs.nilm`
+
+Our (fake) key: `my-secret-key-ABCDEFG`
+
+Our (fake) monitors domain names: `monitor1.domain.com,monitor2.domain.com`
+
+*Watch to put a space before the echo commands to not add the secrets to your terminal history.*
+
+```bash
+/home/ubuntu> sudo git clone https://github.com/SFTtech/ceph-mount /opt/ceph-mount
+/home/ubuntu> sudo ln -s /opt/ceph-mount/mount.ceph /sbin/mount.ceph
+/home/ubuntu> sudo mkdir /etc/ceph
+/home/ubuntu>  sudo echo "my-secret-key-ABCDEFG" > /etc/ceph/nilm.keyring
+/home/ubuntu>  sudo echo -e "[global]\nmon_host=monitor1.domain.com,monitor2.domain.com" > /etc/ceph/ceph.conf
+/home/ubuntu> mkdir /home/ubuntu/nilm
+/home/ubuntu> sudo mount -t ceph :/nilm /home/ubuntu/nilm -o name=fs.nilm,secretfile=/etc/ceph/nilm.keyring
+```
+
 ### Contact
 
 If you have questions, suggestions, encounter any problem,
