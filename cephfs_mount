@@ -3,7 +3,7 @@
 """
 CephFS kernel mount tool.
 
-(c) 2019-2020 Jonas Jelten <jj@sft.lol>
+(c) 2019-2022 Jonas Jelten <jj@sft.lol>
 Released under GPLv3 or later.
 
 Can mount CephFS without Ceph's `mount.ceph` helper tool,
@@ -75,7 +75,8 @@ def resolve_mons(mon_str):
     to monip,monip:port,...
     """
 
-    mon_default_port = 6789
+    # msgr v2 port
+    mon_default_port = 3300
 
     mons = mon_str.split(",")
     resolved_mons = []
