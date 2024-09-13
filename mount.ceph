@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+usr/bin/env python3
 
 """
 mount.ceph helper script
@@ -52,9 +52,9 @@ def main():
     cli.add_argument("--user", default="admin",
                      help=("default username for authentication if -o name=$username"
                            " is missing. default is %(default)s."))
-    cli.add_argument("--keyfile", default="/etc/ceph/ceph.client.admin.keyring",
+    cli.add_argument("--keyfile",
                      help=("default secret keyfile if -o secretfile=$file is missing."
-                           " default is %(default)s, but determined by username"))
+                           " default is /etc/ceph/ceph.client.$username.keyring"))
     cli.add_argument("-o", "--options", default="rw",
                      help=("ceph mount options, e.g.: rw,name=username,secretfile=..."
                            " default value is -o %(default)s."))
@@ -82,28 +82,34 @@ def main():
 
     for option in options:
         if "=" in option and option[-1] != "=":
-            option_left = option.split("=")[0]
-            if option_left == "secret":
+            option_name, option_value = option.split("=", maxsplit=1)
+
+            if option_name == "secret":
                 cli.error("secret=... no longer possible, "
                           "use secretfile= instead")
-            elif option_left == "noauto":
+            elif option_name == "noauto":
+                # filter out
                 continue
-            elif option_left in ("secretfile", "keyfile"):
-                keyfile = option.split("=")[1]
+            elif option_name in ("secretfile", "keyfile"):
+                keyfile = option_value
                 continue
-            elif option_left == "name":
-                username = option.split("=")[1]
+            elif option_name == "name":
+                username = option_value
                 continue
 
         cleaned_options_list.append(option)
 
     cleaned_options = ",".join(cleaned_options_list)
 
-    if not keyfile:
-        keyfile = args.keyfile
-
     if not username:
         username = args.user
+
+    if not keyfile:
+        if args.keyfile:
+            keyfile = args.keyfile
+        else:
+            keyfile = "/etc/ceph/ceph.client.%s.keyring" % (username,)
+
 
     # call to the actual mount tool
     cephfs_mount.ceph_mount(monitors,
